@@ -108,7 +108,14 @@ module SimpLog
         File.copy source, target
         file.truncate
       rescue ex
-        raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+        begin
+          # if truncate fails, fall back to renaming the file instead
+          File.delete target
+          File.rename source, target
+          file = File.new(source, "a")
+        rescue ex
+          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+        end
       else
         raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
       end
