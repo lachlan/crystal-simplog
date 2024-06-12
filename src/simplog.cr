@@ -51,12 +51,6 @@ module SimpLog
     def initialize(filename : String, @formatter : ::Log::Formatter = ::Log::ShortFormat)
       parent_dir = Path.new(filename).dirname
       Dir.mkdir(parent_dir) unless File.exists?(parent_dir) && File.directory?(parent_dir)
-
-      # rotate immediately if file already exists
-      if File.exists?(filename) && File.info(filename).size > 0
-        File.rename filename, rotated_filename(filename)
-      end
-
       initialize(File.new(filename, "a"), formatter)
     end
 
@@ -65,8 +59,9 @@ module SimpLog
     private def initialize(@file : File, @formatter : ::Log::Formatter = ShortFormat)
       super(DEFAULT_DISPATCH_MODE)
       @parent_dir = Path.new(@file.path).normalize.parent
-      @lock = Mutex.new
-      @next_rotation_at = next_rotation
+      @rotate_lock, @housekeeping_lock = Mutex.new, Mutex.new
+      # rotate immediately if log file already exists with data in it, otherwise rotate as per schedule
+      @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
     end
 
     # Writes an entry to the log rotating the log file if required
@@ -107,24 +102,28 @@ module SimpLog
 
     # Rotates the current log file if required
     private def rotate_log_if_required : Nil
-      @lock.synchronize do
-        if Time.local >= @next_rotation_at
-          @file = rotate @file
-          @next_rotation_at = next_rotation
-          spawn process_aged_logs
+      current_time = Time.local
+      if current_time >= @next_rotation_at
+        @rotate_lock.synchronize do
+          # check again in case another fiber already rotated file
+          if current_time >= @next_rotation_at
+            @file = rotate @file
+            @next_rotation_at = next_rotation
+            spawn process_aged_logs
+          end
         end
       end
     end
 
     # Returns the new filename to use when rotating the given filename
-    private def rotated_filename(filename : String) : String
+    private def rotate_filename(filename : String) : String
       "#{filename}.#{Time.local.to_s(DATETIME_FORMAT)}"
     end
 
     # Rotates the given log file
     private def rotate(file : File) : File
       source = file.path
-      target = rotated_filename source
+      target = rotate_filename source
       message = "Rotate log file: #{source} --> #{target}"
 
       begin
@@ -142,7 +141,7 @@ module SimpLog
     # and deletes any log files (compressed or otherwise) older than
     # specified retention duration
     private def process_aged_logs : Nil
-      @lock.synchronize do
+      @housekeeping_lock.synchronize do
         # currently need to use a Path object with Dir, because it
         # doesn't handle strings with backslashes on Windows correctly
         # but works fine with Path objects
