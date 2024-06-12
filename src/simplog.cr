@@ -51,17 +51,22 @@ module SimpLog
     def initialize(filename : String, @formatter : ::Log::Formatter = ::Log::ShortFormat)
       parent_dir = Path.new(filename).dirname
       Dir.mkdir(parent_dir) unless File.exists?(parent_dir) && File.directory?(parent_dir)
+
+      # rotate immediately if file already exists
+      if File.exists?(filename) && File.info(filename).size > 0
+        File.rename filename, rotated_filename(filename)
+      end
+
       initialize(File.new(filename, "a"), formatter)
     end
 
     # Creates a new FileBackend, filename should use .log extension for log retention to
     # work correctly and use a directory dedicated to log files
-    def initialize(@file : File, @formatter : ::Log::Formatter = ShortFormat)
+    private def initialize(@file : File, @formatter : ::Log::Formatter = ShortFormat)
       super(DEFAULT_DISPATCH_MODE)
       @parent_dir = Path.new(@file.path).normalize.parent
       @lock = Mutex.new
-      # rotate immediately if log file already exists with data in it, otherwise rotate as per schedule
-      @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
+      @next_rotation_at = next_rotation
     end
 
     # Writes an entry to the log rotating the log file if required
@@ -70,17 +75,28 @@ module SimpLog
       raw_write entry
     end
 
-    # Writes an entry to the log without log file rotation
+    # Writes an entry to the current file without log file rotation
     private def raw_write(entry : ::Log::Entry) : Nil
-      format(entry)
-      @file.puts
-      @file.flush
+      raw_write entry, @file
     end
 
-    # Emits the *entry* to the given *io*.
+    # Writes an entry to the given file without log file rotation
+    private def raw_write(entry : ::Log::Entry, file : File) : Nil
+      format entry, file
+      file.puts
+      file.flush
+    end
+
+    # Emits the *entry* to the current file.
     # It uses the `#formatter` to convert.
     def format(entry : ::Log::Entry) : Nil
-      @formatter.format(entry, @file)
+      format entry, @file
+    end
+
+    # Emits the *entry* to the given *file*.
+    # It uses the `#formatter` to convert.
+    private def format(entry : ::Log::Entry, file : File) : Nil
+      @formatter.format(entry, file)
     end
 
     # Sets the age at which the log file will be rotated
@@ -91,33 +107,33 @@ module SimpLog
 
     # Rotates the current log file if required
     private def rotate_log_if_required : Nil
-      if Time.local >= @next_rotation_at
-        @file = rotate @file
-        @next_rotation_at = next_rotation
-        spawn process_aged_logs
+      @lock.synchronize do
+        if Time.local >= @next_rotation_at
+          @file = rotate @file
+          @next_rotation_at = next_rotation
+          spawn process_aged_logs
+        end
       end
+    end
+
+    # Returns the new filename to use when rotating the given filename
+    private def rotated_filename(filename : String) : String
+      "#{filename}.#{Time.local.to_s(DATETIME_FORMAT)}"
     end
 
     # Rotates the given log file
     private def rotate(file : File) : File
       source = file.path
-      target = "#{source}.#{Time.local.to_s(DATETIME_FORMAT)}"
+      target = rotated_filename source
       message = "Rotate log file: #{source} --> #{target}"
 
       begin
-        File.copy source, target
-        file.truncate
+        file.rename target
+        file = File.new(source, "a")
       rescue ex
-        begin
-          # if truncate fails, fall back to renaming the file instead
-          File.delete target
-          File.rename source, target
-          file = File.new(source, "a")
-        rescue ex
-          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
-        end
+        raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
       else
-        raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
+        raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil), file
       end
       file
     end
