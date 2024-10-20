@@ -222,7 +222,11 @@ module SimpLog
 
     # Returns the log path relative to the current executable
     private def log_path : String
-      File.join base_path, "..", "log"
+      if File.basename(base_path).downcase == "bin"
+        File.join base_path, "..", "log"
+      else
+        base_path
+      end
     end
 
     # Returns the default log filename and path used if not specified
