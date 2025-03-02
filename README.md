@@ -1,6 +1,6 @@
 # SimpLog
 
-Crystal lang shard which provides a file-based `Log::Backend` that
+Crystal language shard which provides a file-based `Log::Backend` that
 supports automatic log file rotation, compression, and purging.
 
 ## Installation
