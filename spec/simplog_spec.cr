@@ -2,7 +2,7 @@ require "./spec_helper"
 
 describe SimpLog::FileBackend do
   it "calculates next rotation at midnight for rotations >= 1 day" do
-    backend = SimpLog::FileBackend.new
+    backend = SimpLog::FileBackend.new(File.tempname)
     backend.next_rotation_at.should eq((Time.local + 1.day).at_beginning_of_day)
   end
 

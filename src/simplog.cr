@@ -109,7 +109,13 @@ module SimpLog
           if current_time >= @next_rotation_at
             @file = rotate @file
             @next_rotation_at = next_rotation
-            spawn process_aged_logs
+            {% if Fiber.has_constant? "ExecutionContext" %}
+              Fiber::ExecutionContext::Isolated.new("SIMPLOG COMPRESS AND PURGE AGED LOGS") do
+                process_aged_logs
+              end
+            {% else %}
+              spawn process_aged_logs
+            {% end %}
           end
         end
       end
@@ -179,7 +185,7 @@ module SimpLog
 
     # Compresses the contents of the source file writing the results
     # to the target file
-    private def compress(source : String, target : String) : Nil
+    private def compress(source : String, target : String, &) : Nil
       if File.exists?(source) && !File.directory?(source) && !File.exists?(target)
         modification_time = File.info(source).modification_time
         File.open(source, "r") do |input|
