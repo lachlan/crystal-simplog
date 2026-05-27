@@ -1,9 +1,13 @@
 name: simplog
-version: 0.1.5
+version: 0.1.6
+
+description: >
+  Crystal language shard which provides a file-based `Log::Backend` that
+  supports automatic log file rotation, compression, and purging.
 
 authors:
   - Lachlan Dowding <lachlan@permafrost.space>
 
-crystal: '>= 1.20.0'
+crystal: ">= 1.20.0"
 
 license: MIT

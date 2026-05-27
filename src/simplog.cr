@@ -167,11 +167,14 @@ module SimpLog
               end
             elsif (compress_at = @compress_at) && file_age >= compress_at && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
               target = "#{file}#{DEFAULT_GZIP_EXTENSION}"
-              message = "Compress aged log file: #{file} --> #{target}"
+              message = "Compress aged log file: #{file} (#{File.size(file).humanize_bytes(format: :JEDEC)}) --> #{target}"
               begin
-                compress(file, target) do |source, _|
-                  File.delete source
+                elapsed = Time.measure do
+                  compress(file, target) do |source, _|
+                    File.delete source
+                  end
                 end
+                message = "#{message} (#{File.size(target).humanize_bytes(format: :JEDEC)}) in #{elapsed}"
               rescue ex
                 raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
               else
@@ -191,9 +194,10 @@ module SimpLog
         File.open(source, "r") do |input|
           File.open(target, "w") do |output|
             Compress::Gzip::Writer.open(output) do |compressed_output|
+              # TODO: how to preserve source file modification time within compressed file
               IO.copy(input, compressed_output)
             end
-            # set the source file's modfication time on the target file
+            # set the source file's modification time on the target compressed file
             output.utime modification_time, modification_time
           end
         end
