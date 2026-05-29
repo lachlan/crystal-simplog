@@ -194,10 +194,11 @@ module SimpLog
         File.open(source, "r") do |input|
           File.open(target, "w") do |output|
             Compress::Gzip::Writer.open(output) do |compressed_output|
-              # TODO: how to preserve source file modification time within compressed file
+              # preserve source file modification time within compressed file
+              compressed_output.header.modification_time = modification_time
               IO.copy(input, compressed_output)
             end
-            # set the source file's modification time on the target compressed file
+            # preserve source file modification time on the compressed file
             output.utime modification_time, modification_time
           end
         end

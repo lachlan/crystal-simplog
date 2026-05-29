@@ -1,5 +1,5 @@
 name: simplog
-version: 0.1.6
+version: 0.1.7
 
 description: >
   Crystal language shard which provides a file-based `Log::Backend` that
