@@ -20,7 +20,19 @@ supports automatic log file rotation, compression, and purging.
 ```crystal
 require "simplog"
 
-Log.setup_from_env(backend: SimpLog::FileBackend.new)
+# create a new log backend
+backend = SimpLog::FileBackend.new
+# defaults to retaining log files forever, however log purging can be enabled
+# by setting the file retention as follows:
+backend.retention = 14.days
+# defaults to compressing logs older than 7 days, however this can be changed
+# as follows:
+backend.compress_at = 2.days
+
+# setup logging to use simplog backend
+Log.setup_from_env(backend: backend)
+
+# then log messages as required...
 Log.info { "Hello World" } # => writes to log file ./log/<executable>.log
 ```
 
