@@ -63,6 +63,7 @@ module SimpLog
       # rotate immediately if log file already exists with data in it,
       # otherwise rotate as per schedule
       @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
+      schedule_rotation
     end
 
     # Writes an entry to the log rotating the log file if required
@@ -101,10 +102,21 @@ module SimpLog
       @next_rotation_at = next_rotation
     end
 
+    # Schedules log file rotation to run at the next rotation datetime
+    private def schedule_rotation : Nil
+      spawn do
+        if next_rotation_at = @next_rotation_at
+          wait = next_rotation_at - Time.local
+          sleep(wait) if wait > Time::Span.zero
+          rotate_log_if_required
+        end
+      end
+    end
+
     # Rotates the current log file if required
     private def rotate_log_if_required : Nil
       current_time = Time.local
-      if current_time >= @next_rotation_at
+      if (next_rotation_at = @next_rotation_at) && current_time >= next_rotation_at
         @rotate_lock.synchronize do
           # check again in case another fiber already rotated file
           if current_time >= @next_rotation_at
@@ -117,6 +129,7 @@ module SimpLog
             {% else %}
               spawn process_aged_logs
             {% end %}
+            schedule_rotation
           end
         end
       end
