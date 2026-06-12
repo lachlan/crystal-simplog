@@ -1,8 +1,8 @@
 require "compress/gzip"
 require "log"
 
-# Provides a file-based `Log::Backend` that supports automatic log
-# file rotation, compression, and purging.
+# Provides a file-based `Log::Backend` that supports automatic log file
+# rotation, compression, and purging.
 #
 # Example:
 # ```
@@ -40,27 +40,28 @@ module SimpLog
     # When the next log file rotation is scheduled to occur
     getter next_rotation_at : Time
 
-    # Creates a new LogFileBackend, filename should use .log extension for log retention to
-    # work correctly and use a directory dedicated to log files
+    # Creates a new LogFileBackend, filename should use .log extension for log
+    # retention to work correctly and use a directory dedicated to log files
     def initialize(@formatter : ::Log::Formatter = ::Log::ShortFormat)
       initialize(log_filename, formatter)
     end
 
-    # Creates a new LogFileBackend, filename should use .log extension for log retention to
-    # work correctly and use a directory dedicated to log files
+    # Creates a new LogFileBackend, filename should use .log extension for log
+    # retention to work correctly and use a directory dedicated to log files
     def initialize(filename : String, @formatter : ::Log::Formatter = ::Log::ShortFormat)
       parent_dir = Path.new(filename).dirname
       Dir.mkdir(parent_dir) unless File.exists?(parent_dir) && File.directory?(parent_dir)
       initialize(File.new(filename, "a"), formatter)
     end
 
-    # Creates a new FileBackend, filename should use .log extension for log retention to
-    # work correctly and use a directory dedicated to log files
+    # Creates a new FileBackend, filename should use .log extension for log
+    # retention to work correctly and use a directory dedicated to log files
     private def initialize(@file : File, @formatter : ::Log::Formatter = ShortFormat)
       super(DEFAULT_DISPATCH_MODE)
       @parent_dir = Path.new(@file.path).normalize.parent
       @rotate_lock, @housekeeping_lock = Mutex.new, Mutex.new
-      # rotate immediately if log file already exists with data in it, otherwise rotate as per schedule
+      # rotate immediately if log file already exists with data in it,
+      # otherwise rotate as per schedule
       @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
     end
 
@@ -186,8 +187,8 @@ module SimpLog
       end
     end
 
-    # Compresses the contents of the source file writing the results
-    # to the target file
+    # Compresses the contents of the source file writing the results to the
+    # target file
     private def compress(source : String, target : String, &) : Nil
       if File.exists?(source) && !File.directory?(source) && !File.exists?(target)
         modification_time = File.info(source).modification_time
