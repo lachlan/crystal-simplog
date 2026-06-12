@@ -162,37 +162,39 @@ module SimpLog
     # specified retention duration
     private def process_aged_logs : Nil
       @housekeeping_lock.synchronize do
-        # currently need to use a Path object with Dir, because it
-        # doesn't handle strings with backslashes on Windows correctly
-        # but works fine with Path objects
-        # TODO: investigate this issue further in Crystal source
-        Dir[Path.new(@parent_dir, "*.log.*")].each do |file|
-          info = File.info(file)
-          unless info.directory?
-            file_age = Time.local - info.modification_time
-            if (retention = @retention) && file_age >= retention
-              message = "Purge aged log file: #{file}"
-              begin
-                File.delete file
-              rescue ex
-                raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
-              else
-                raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
-              end
-            elsif (compress_at = @compress_at) && file_age >= compress_at && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
-              target = "#{file}#{DEFAULT_GZIP_EXTENSION}"
-              message = "Compress aged log file: #{file} (#{File.size(file).humanize_bytes(format: :JEDEC)}) --> #{target}"
-              begin
-                elapsed = Time.measure do
-                  compress(file, target) do |source, _|
-                    File.delete source
-                  end
+        if (parent_dir = @parent_dir) && (file = @file)
+          # currently need to use a Path object with Dir, because it
+          # doesn't handle strings with backslashes on Windows correctly
+          # but works fine with Path objects
+          # TODO: investigate this issue further in Crystal source
+          Dir[Path.new(parent_dir, File.basename(file.path) + ".*")].each do |file|
+            info = File.info(file)
+            unless info.directory?
+              file_age = Time.local - info.modification_time
+              if (retention = @retention) && file_age > retention
+                message = "Purge aged log file: #{file}"
+                begin
+                  File.delete file
+                rescue ex
+                  raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+                else
+                  raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
                 end
-                message = "#{message} (#{File.size(target).humanize_bytes(format: :JEDEC)}) in #{elapsed}"
-              rescue ex
-                raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
-              else
-                raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
+              elsif (compress_at = @compress_at) && file_age >= compress_at && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
+                target = "#{file}#{DEFAULT_GZIP_EXTENSION}"
+                message = "Compress aged log file: #{file} (#{File.size(file).humanize_bytes(format: :JEDEC)}) --> #{target}"
+                begin
+                  elapsed = Time.measure do
+                    compress(file, target) do |source, _|
+                      File.delete source
+                    end
+                  end
+                  message = "#{message} (#{File.size(target).humanize_bytes(format: :JEDEC)}) in #{elapsed}"
+                rescue ex
+                  raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+                else
+                  raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
+                end
               end
             end
           end
