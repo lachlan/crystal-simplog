@@ -24,10 +24,10 @@ require "simplog"
 backend = SimpLog::FileBackend.new
 # defaults to retaining log files forever, however log purging can be enabled
 # by setting the file retention as follows:
-backend.retention = 14.days
+backend.delete_after = 14.days
 # defaults to compressing logs older than 7 days, however this can be changed
 # as follows:
-backend.compress_at = 2.days
+backend.compress_after = 2.days
 
 # setup logging to use simplog backend
 Log.setup_from_env(backend: backend)

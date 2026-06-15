@@ -22,7 +22,7 @@ module SimpLog
     # Datetime pattern used to suffix rotated file names
     DATETIME_FORMAT = "%Y%m%d%H%M%S%3N"
     # Default compress duration: logs will be compress after 1 week
-    DEFAULT_COMPRESS_AT = 7.days
+    DEFAULT_COMPRESS_AFTER = 7.days
     # Default rotation duration: logs will be rotated after 1 day
     DEFAULT_ROTATE_AT = 1.day
     # Default `Log::DispatchMode`
@@ -31,10 +31,10 @@ module SimpLog
     DEFAULT_GZIP_EXTENSION = ".gz"
 
     # File age at which log files will be gzip compressed
-    property compress_at : Time::Span = DEFAULT_COMPRESS_AT
+    property compress_after : Time::Span = DEFAULT_COMPRESS_AFTER
     # File age at which log files will be purged, if not set logs will
     # be retained forever by default
-    property retention : Time::Span?
+    property delete_after : Time::Span? = nil
     # File age at which the current log file will be rotated
     property rotate_at : Time::Span = DEFAULT_ROTATE_AT
     # When the next log file rotation is scheduled to occur
@@ -63,7 +63,7 @@ module SimpLog
       # rotate immediately if log file already exists with data in it,
       # otherwise rotate as per schedule
       @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
-      schedule_rotation
+      spawn rotate_log_at_next_scheduled_datetime
     end
 
     # Writes an entry to the log rotating the log file if required
@@ -102,14 +102,13 @@ module SimpLog
       @next_rotation_at = next_rotation
     end
 
-    # Schedules log file rotation to run at the next rotation datetime
-    private def schedule_rotation : Nil
-      spawn do
-        if next_rotation_at = @next_rotation_at
-          wait = next_rotation_at - Time.local
-          sleep(wait) if wait > Time::Span.zero
-          rotate_log_if_required
-        end
+    # Waits until the next rotation scheduled datetime and then rotates the
+    # log unless already rotated
+    private def rotate_log_at_next_scheduled_datetime : Nil
+      if next_rotation_at = @next_rotation_at
+        wait = next_rotation_at - Time.local
+        sleep(wait) if wait > Time::Span.zero
+        rotate_log_if_required
       end
     end
 
@@ -129,7 +128,7 @@ module SimpLog
             {% else %}
               spawn process_aged_logs
             {% end %}
-            schedule_rotation
+            spawn rotate_log_at_next_scheduled_datetime
           end
         end
       end
@@ -157,9 +156,9 @@ module SimpLog
       file
     end
 
-    # Compresses log files older than specified compression duration,
-    # and deletes any log files (compressed or otherwise) older than
-    # specified retention duration
+    # Compresses log files older than `compress_after` duration, and deletes
+    # any log files (compressed or otherwise) older than `delete_after`
+    # duration
     private def process_aged_logs : Nil
       @housekeeping_lock.synchronize do
         if (parent_dir = @parent_dir) && (file = @file)
@@ -171,8 +170,8 @@ module SimpLog
             info = File.info(file)
             unless info.directory?
               file_age = Time.local - info.modification_time
-              if (retention = @retention) && file_age > retention
-                message = "Purge aged log file: #{file}"
+              if (delete_after = @delete_after) && delete_after > Time::Span.zero && file_age > delete_after
+                message = "Delete aged log file: #{file}"
                 begin
                   File.delete file
                 rescue ex
@@ -180,7 +179,7 @@ module SimpLog
                 else
                   raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
                 end
-              elsif (compress_at = @compress_at) && file_age >= compress_at && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
+              elsif (compress_after = @compress_after) && compress_after > Time::Span.zero && file_age > compress_after && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
                 target = "#{file}#{DEFAULT_GZIP_EXTENSION}"
                 message = "Compress aged log file: #{file} (#{File.size(file).humanize_bytes(format: :JEDEC)}) --> #{target}"
                 begin
