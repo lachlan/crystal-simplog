@@ -141,17 +141,34 @@ module SimpLog
 
     # Rotates the given log file
     private def rotate(file : File) : File
-      source = file.path
-      target = rotate_filename source
-      message = "Rotate log file: #{source} --> #{target}"
+      source_file, source_path, renamed, rotated = file, file.path, false, false
+      target_path = rotate_filename(source_path)
+      message = "Rotate log file: #{source_path} --> #{target_path}"
 
       begin
-        file.rename target
-        file = File.new(source, "a")
+        # if rename fails, we will keep logging to the existing open file
+        source_file.rename(target_path)
+        renamed = true
+        # if opening new file fails we will keep logging to the renamed file
+        file = File.new(source_path, "a")
+        rotated = true
       rescue ex
-        raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
+        begin
+          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
+          # if we renamed the existing file but could not open a new one,
+          # attempt to rename the existing file back to its original name
+          source_file.rename(source_path) if renamed && !rotated
+        rescue e
+          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, e), file
+        end
       else
         raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil), file
+      ensure
+        begin
+          source_file.close if renamed && rotated
+        rescue e
+          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, e), file
+        end
       end
       file
     end
