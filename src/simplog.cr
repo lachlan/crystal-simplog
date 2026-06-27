@@ -18,7 +18,7 @@ module SimpLog
   # Provides a `Log::Backend` that is backed with a log file that
   # supports automatic rotation, compression, and purging at specified
   # durations
-  class FileBackend < ::Log::Backend
+  class FileBackend < ::Log::IOBackend
     # Datetime pattern used to suffix rotated file names
     DATETIME_FORMAT = "%Y%m%d%H%M%S%3N"
     # Default compress duration: logs will be compress after 1 week
@@ -40,60 +40,64 @@ module SimpLog
     # When the next log file rotation is scheduled to occur
     getter next_rotation_at : Time
 
-    # Creates a new LogFileBackend, filename should use .log extension for log
-    # retention to work correctly and use a directory dedicated to log files
-    def initialize(@formatter : ::Log::Formatter = ::Log::ShortFormat)
-      initialize(log_filename, formatter)
+    # Creates a new LogFileBackend with a log filename inferred from the
+    # executable filename
+    def initialize(*, formatter : ::Log::Formatter = ::Log::ShortFormat, dispatcher : ::Log::Dispatcher::Spec = DEFAULT_DISPATCH_MODE)
+      initialize(log_filename, formatter: formatter, dispatcher: dispatcher)
     end
 
     # Creates a new LogFileBackend, filename should use .log extension for log
-    # retention to work correctly and use a directory dedicated to log files
-    def initialize(filename : String, @formatter : ::Log::Formatter = ::Log::ShortFormat)
+    # retention to work correctly and ideally use a dedicated directory
+    def initialize(filename : String, *, formatter : ::Log::Formatter = ::Log::ShortFormat, dispatcher : ::Log::Dispatcher::Spec = DEFAULT_DISPATCH_MODE)
       parent_dir = Path.new(filename).dirname
       Dir.mkdir(parent_dir) unless File.exists?(parent_dir) && File.directory?(parent_dir)
-      initialize(File.new(filename, "a"), formatter)
+      initialize(File.new(filename, "a"), formatter: formatter, dispatcher: dispatcher)
     end
 
-    # Creates a new FileBackend, filename should use .log extension for log
-    # retention to work correctly and use a directory dedicated to log files
-    private def initialize(@file : File, @formatter : ::Log::Formatter = ShortFormat)
-      super(DEFAULT_DISPATCH_MODE)
+    # Creates a new FileBackend with the given file
+    private def initialize(@file : File, *, formatter : ::Log::Formatter = ShortFormat, dispatcher : ::Log::Dispatcher::Spec = DEFAULT_DISPATCH_MODE)
+      super(@file, formatter: formatter, dispatcher: dispatcher)
       @parent_dir = Path.new(@file.path).normalize.parent
       @rotate_lock, @housekeeping_lock = Mutex.new, Mutex.new
-      # rotate immediately if log file already exists with data in it,
-      # otherwise rotate as per schedule
-      @next_rotation_at = File.exists?(@file.path) && File.info(@file.path).size > 0 ? Time.local : next_rotation
+      # rotate immediately if log file already exists and is not empty
+      rotate_log if File.exists?(@file.path) && File.info(@file.path).size > 0
+      @next_rotation_at = next_rotation
       spawn rotate_log_at_next_scheduled_datetime
     end
 
-    # Writes an entry to the log rotating the log file if required
+    # Writes an entry to the log file, first rotating the log file if required
     def write(entry : ::Log::Entry) : Nil
       rotate_log_if_required
-      raw_write entry
+      write entry, @file
     end
 
-    # Writes an entry to the current file without log file rotation
-    private def raw_write(entry : ::Log::Entry) : Nil
-      raw_write entry, @file
+    # Writes the given *entry* to the given *io*
+    protected def write(entry : ::Log::Entry, io : IO) : Nil
+      format(entry, io)
+      io.puts
+      io.flush
     end
 
-    # Writes an entry to the given file without log file rotation
-    private def raw_write(entry : ::Log::Entry, file : File) : Nil
-      format entry, file
-      file.puts
-      file.flush
-    end
-
-    # Emits the *entry* to the current file.
-    # It uses the `#formatter` to convert.
+    # Emits the *entry* to the log file, using the `#formatter` to convert
     def format(entry : ::Log::Entry) : Nil
       format entry, @file
     end
 
-    # Emits the *entry* to the given *file*.
-    # It uses the `#formatter` to convert.
-    private def format(entry : ::Log::Entry, file : File) : Nil
-      @formatter.format(entry, file)
+    # Emits the *entry* to the given *io*, using the `#formatter` to convert
+    protected def format(entry : ::Log::Entry, io : IO) : Nil
+      @formatter.format(entry, io)
+    end
+
+    # Closes underlying resources used by this backend including the log file
+    def close : Nil
+      super
+      @rotate_lock.synchronize do
+        @file.close
+      end
+    end
+
+    def filename : String
+      @file.path
     end
 
     # Sets the age at which the log file will be rotated
@@ -105,33 +109,35 @@ module SimpLog
     # Waits until the next rotation scheduled datetime and then rotates the
     # log unless already rotated
     private def rotate_log_at_next_scheduled_datetime : Nil
-      if next_rotation_at = @next_rotation_at
-        wait = next_rotation_at - Time.local
-        sleep(wait) if wait > Time::Span.zero
-        rotate_log_if_required
-      end
+      wait = @next_rotation_at - Time.local
+      sleep(wait) if wait > Time::Span.zero
+      rotate_log_if_required
     end
 
     # Rotates the current log file if required
     private def rotate_log_if_required : Nil
-      current_time = Time.local
-      if (next_rotation_at = @next_rotation_at) && current_time >= next_rotation_at
+      if Time.local >= @next_rotation_at
         @rotate_lock.synchronize do
           # check again in case another fiber already rotated file
-          if current_time >= @next_rotation_at
-            @file = rotate @file
-            @next_rotation_at = next_rotation
-            {% if Fiber.has_constant? "ExecutionContext" %}
-              Fiber::ExecutionContext::Isolated.new("SIMPLOG COMPRESS AND PURGE AGED LOGS") do
-                process_aged_logs
-              end
-            {% else %}
-              spawn process_aged_logs
-            {% end %}
+          if Time.local >= @next_rotation_at
+            rotate_log
             spawn rotate_log_at_next_scheduled_datetime
           end
         end
       end
+    end
+
+    # Rotates the log file, and then processes aged logs in another fiber
+    private def rotate_log : Nil
+      io = @file = rotate(@file)
+      @next_rotation_at = next_rotation
+      {% if Fiber.has_constant? "ExecutionContext" %}
+        Fiber::ExecutionContext::Isolated.new("SIMPLOG COMPRESS AND PURGE AGED LOGS") do
+          process_aged_logs
+        end
+      {% else %}
+        spawn process_aged_logs
+      {% end %}
     end
 
     # Returns the new filename to use when rotating the given filename
@@ -139,7 +145,8 @@ module SimpLog
       "#{filename}.#{Time.local.to_s(DATETIME_FORMAT)}"
     end
 
-    # Rotates the given log file
+    # Rotates the given file by renaming it with a datetime suffix extension
+    # and then returning a newly opened file with the original name
     private def rotate(file : File) : File
       source_file, source_path, renamed, rotated = file, file.path, false, false
       target_path = rotate_filename(source_path)
@@ -154,20 +161,22 @@ module SimpLog
         rotated = true
       rescue ex
         begin
-          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
+          write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
           # if we renamed the existing file but could not open a new one,
           # attempt to rename the existing file back to its original name
           source_file.rename(source_path) if renamed && !rotated
         rescue e
-          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, e), file
+          write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, e), file
         end
       else
-        raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil), file
+        write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil), file
       ensure
-        begin
-          source_file.close if renamed && rotated
-        rescue e
-          raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, e), file
+        if renamed && rotated
+          begin
+            source_file.close
+          rescue ex
+            write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex), file
+          end
         end
       end
       file
@@ -183,33 +192,33 @@ module SimpLog
           # doesn't handle strings with backslashes on Windows correctly
           # but works fine with Path objects
           # TODO: investigate this issue further in Crystal source
-          Dir[Path.new(parent_dir, File.basename(file.path) + ".*")].each do |file|
-            info = File.info(file)
+          Dir[Path.new(parent_dir, File.basename(file.path) + ".*")].each do |source|
+            info = File.info(source)
             unless info.directory?
               file_age = Time.local - info.modification_time
               if (delete_after = @delete_after) && delete_after > Time::Span.zero && file_age > delete_after
-                message = "Delete aged log file: #{file}"
+                message = "Delete aged log file: #{source}"
                 begin
-                  File.delete file
+                  File.delete source
                 rescue ex
-                  raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+                  write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
                 else
-                  raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
+                  write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
                 end
-              elsif (compress_after = @compress_after) && compress_after > Time::Span.zero && file_age > compress_after && !file.ends_with?(DEFAULT_GZIP_EXTENSION)
-                target = "#{file}#{DEFAULT_GZIP_EXTENSION}"
-                message = "Compress aged log file: #{file} (#{File.size(file).humanize_bytes(format: :JEDEC)}) --> #{target}"
+              elsif (compress_after = @compress_after) && compress_after > Time::Span.zero && file_age > compress_after && !source.ends_with?(DEFAULT_GZIP_EXTENSION)
+                target = "#{source}#{DEFAULT_GZIP_EXTENSION}"
+                message = "Compress aged log file: #{source} (#{File.size(source).humanize_bytes(format: :JEDEC)}) --> #{target}"
                 begin
                   elapsed = Time.measure do
-                    compress(file, target) do |source, _|
+                    compress(source, target) do |source, _|
                       File.delete source
                     end
                   end
                   message = "#{message} (#{File.size(target).humanize_bytes(format: :JEDEC)}) in #{elapsed}"
                 rescue ex
-                  raw_write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
+                  write Log::Entry.new("LOG", Log::Severity::Error, message, Log.context.metadata, ex)
                 else
-                  raw_write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
+                  write Log::Entry.new("LOG", Log::Severity::Info, message, Log.context.metadata, nil)
                 end
               end
             end
@@ -241,6 +250,7 @@ module SimpLog
     # Returns datetime for when the next log rotation should occur
     private def next_rotation : Time
       next_rotation_time = Time.local + @rotate_at
+      # pin rotation to midnight local time when rotating at 1 or more days
       next_rotation_time = next_rotation_time.at_beginning_of_day if @rotate_at.days > 0
       next_rotation_time
     end
